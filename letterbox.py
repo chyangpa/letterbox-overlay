@@ -1,11 +1,9 @@
-"""Letterbox Overlay — 활성 창 뒤에 검정 오버레이를 배치하여 레터박스 효과를 만드는 프로그램."""
+"""Letterbox Overlay — 활성 창 외 영역을 검정으로 채우는 프로그램."""
 
 import ctypes
 import ctypes.wintypes as wintypes
 import time
 import os
-import re
-import unicodedata
 
 # Win API constants
 SWP_NOSIZE = 0x0001
@@ -29,13 +27,39 @@ MONITOR_DEFAULTTONEAREST = 2
 CS_HREDRAW = 0x0002
 CS_VREDRAW = 0x0001
 WS_POPUP = 0x80000000
-WS_VISIBLE = 0x10000000
 WM_DESTROY = 0x0002
-COLOR_BACKGROUND = 1
+WM_COMMAND = 0x0111
+WM_USER = 0x0400
+WM_TRAYICON = WM_USER + 1
+
+# Tray icon constants
+NIF_ICON = 0x00000002
+NIF_TIP = 0x00000004
+NIF_MESSAGE = 0x00000001
+NIM_ADD = 0x00000000
+NIM_MODIFY = 0x00000001
+NIM_DELETE = 0x00000002
+WM_RBUTTONUP = 0x0205
+TPM_RIGHTALIGN = 0x0008
+TPM_BOTTOMALIGN = 0x0020
+MF_STRING = 0x00000000
+
+IDM_EXIT = 1001
 
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
 gdi32 = ctypes.windll.gdi32
+
+# 다크모드 메뉴 활성화 (Windows 10 1903+)
+try:
+    uxtheme = ctypes.windll.uxtheme
+    _SetPreferredAppMode = uxtheme[135]
+    _SetPreferredAppMode.argtypes = [ctypes.c_int]
+    _SetPreferredAppMode(1)
+    _FlushMenuThemes = uxtheme[136]
+    _FlushMenuThemes()
+except Exception:
+    pass
 
 # SetWindowPos argtypes 설정 (64비트에서 HWND 제대로 전달)
 user32.SetWindowPos.argtypes = [
@@ -53,6 +77,9 @@ user32.DefWindowProcW.restype = ctypes.c_long
 
 user32.LoadCursorW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR]
 user32.LoadCursorW.restype = wintypes.HANDLE
+
+user32.LoadImageW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR, ctypes.c_uint, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+user32.LoadImageW.restype = wintypes.HANDLE
 
 # Window procedure callback type
 WNDPROC = ctypes.WINFUNCTYPE(
@@ -77,6 +104,33 @@ class WNDCLASSEXW(ctypes.Structure):
     ]
 
 
+shell32 = ctypes.windll.shell32
+shell32.Shell_NotifyIconW.argtypes = [wintypes.DWORD, ctypes.c_void_p]
+shell32.Shell_NotifyIconW.restype = wintypes.BOOL
+
+
+NIF_INFO = 0x00000010
+NIIF_NONE = 0x00000000
+
+
+class NOTIFYICONDATAW(ctypes.Structure):
+    _fields_ = [
+        ('cbSize', wintypes.DWORD),
+        ('hWnd', wintypes.HWND),
+        ('uID', ctypes.c_uint),
+        ('uFlags', ctypes.c_uint),
+        ('uCallbackMessage', ctypes.c_uint),
+        ('hIcon', wintypes.HICON),
+        ('szTip', wintypes.WCHAR * 128),
+        ('dwState', wintypes.DWORD),
+        ('dwStateMask', wintypes.DWORD),
+        ('szInfo', wintypes.WCHAR * 256),
+        ('uVersion', ctypes.c_uint),
+        ('szInfoTitle', wintypes.WCHAR * 64),
+        ('dwInfoFlags', wintypes.DWORD),
+    ]
+
+
 class MONITORINFO(ctypes.Structure):
     _fields_ = [
         ('cbSize', wintypes.DWORD),
@@ -86,40 +140,16 @@ class MONITORINFO(ctypes.Structure):
     ]
 
 
-VERSION = "0.2.0"
-
-# ── ANSI 색상 ──
-C_RESET  = "\033[0m"
-C_BOLD   = "\033[1m"
-C_DIM    = "\033[2m"
-C_CYAN   = "\033[36m"
-C_GREEN  = "\033[32m"
-C_YELLOW = "\033[33m"
-C_WHITE  = "\033[37m"
-C_RED    = "\033[31m"
-
-
-def vlen(s):
-    clean = re.sub(r'\033\[[0-9;]*m', '', s)
-    w = 0
-    for c in clean:
-        w += 2 if unicodedata.east_asian_width(c) in ('F', 'W') else 1
-    return w
-
-
-def pad(s, width):
-    return s + ' ' * max(0, width - vlen(s))
-
-
 class LetterboxOverlay:
     def __init__(self):
         self.target_hwnd = None
         self.target_was_topmost = False
         self.active = False
         self.overlay_visible = False
+        self._quit_requested = False
 
-        self._build_banner()
         self._create_overlay_window()
+        self._create_tray_icon()
 
         self._key_was_down = False
         self._last_fg = None
@@ -129,18 +159,23 @@ class LetterboxOverlay:
     def _create_overlay_window(self):
         hInstance = kernel32.GetModuleHandleW(None)
 
-        # 검정 브러시
-        self._black_brush = gdi32.CreateSolidBrush(0x00000000)  # RGB(0,0,0)
-
-        # 커서
+        self._black_brush = gdi32.CreateSolidBrush(0x00000000)
         self._arrow_cursor = user32.LoadCursorW(None, wintypes.LPCWSTR(32512))
 
-        # 윈도우 프로시저
         WM_SETCURSOR = 0x0020
         def _wndproc(hwnd, msg, wp, lp):
             if msg == WM_SETCURSOR:
                 user32.SetCursor(self._arrow_cursor)
                 return 1
+            if msg == WM_TRAYICON:
+                if lp == WM_RBUTTONUP:
+                    self._show_tray_menu()
+                    return 0
+            if msg == WM_COMMAND:
+                cmd_id = wp & 0xFFFF
+                if cmd_id == IDM_EXIT:
+                    self._quit_requested = True
+                    return 0
             return user32.DefWindowProcW(hwnd, msg, wp, lp)
         self._wndproc = WNDPROC(_wndproc)
 
@@ -149,86 +184,84 @@ class LetterboxOverlay:
         wc.style = CS_HREDRAW | CS_VREDRAW
         wc.lpfnWndProc = self._wndproc
         wc.hInstance = hInstance
-        wc.hCursor = user32.LoadCursorW(None, wintypes.LPCWSTR(32512))  # IDC_ARROW
+        wc.hCursor = self._arrow_cursor
         wc.hbrBackground = self._black_brush
         wc.lpszClassName = "LetterboxOverlayClass"
 
         user32.RegisterClassExW(ctypes.byref(wc))
 
-        # 프로토타입: 800x600
         self.overlay_hwnd = user32.CreateWindowExW(
-            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,  # exStyle
-            "LetterboxOverlayClass",                # className
-            "LetterboxOverlay",                     # windowName
-            WS_POPUP,                               # style (타이틀바 없음, 숨김 상태)
-            100, 100, 800, 600,                     # x, y, w, h
+            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            "LetterboxOverlayClass",
+            "LetterboxOverlay",
+            WS_POPUP,
+            0, 0, 1, 1,
             None, None, hInstance, None,
         )
 
-    # ── 터미널 배너 ──
+    # ── 트레이 아이콘 ──
 
-    def _build_banner(self):
-        term_w = os.get_terminal_size().columns
-        self.TW = term_w - 2
-        L = self.TW // 2
-        R = self.TW - L - 1
+    def _create_tray_icon(self):
+        base = os.path.dirname(os.path.abspath(__file__))
+        self._icon_on = user32.LoadImageW(
+            None, os.path.join(base, "activated.ico"), 1,
+            16, 16, 0x00000010,
+        )
+        self._icon_off = user32.LoadImageW(
+            None, os.path.join(base, "deactivated.ico"), 1,
+            16, 16, 0x00000010,
+        )
 
-        def row(left="", right=""):
-            return f"│{pad(left, L)}{C_DIM}│{C_RESET}{pad(right, R)}│"
+        nid = NOTIFYICONDATAW()
+        nid.cbSize = ctypes.sizeof(NOTIFYICONDATAW)
+        nid.hWnd = self.overlay_hwnd
+        nid.uID = 1
+        nid.uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE
+        nid.uCallbackMessage = WM_TRAYICON
+        nid.hIcon = self._icon_off
+        nid.szTip = "Letterbox Overlay\n활성화(Ctrl+Alt+D)"
+        self._nid = nid
 
-        self._row_fn = row
-        self._L = L
-        self._R = R
+        shell32.Shell_NotifyIconW(NIM_ADD, ctypes.byref(self._nid))
 
-        self.banner_rows = [
-            (None,     "", ""),
-            (None,     f"   {C_WHITE}{C_BOLD}Letterbox Overlay{C_RESET}",
-                       f" {C_WHITE}키 바인딩{C_RESET}"),
-            (None,     f"   {C_DIM}[ v{VERSION} ]{C_RESET}",
-                       f" {C_DIM}{'─' * (R - 1)}{C_RESET}"),
-            (None,     "", f" {C_YELLOW}Ctrl+Alt+D{C_RESET} {C_DIM}·{C_RESET} 토글 ON/OFF"),
-            ("status", f"   {C_DIM}○ 대기 중{C_RESET}",
-                       ""),
-            ("target", f"   {C_DIM}  대상: 없음{C_RESET}",
-                       ""),
-            (None,     "", ""),
-        ]
+        # 시작 알림
+        self._nid.uFlags |= NIF_INFO
+        self._nid.szInfoTitle = "Letterbox Overlay"
+        self._nid.szInfo = "트레이에서 실행 중\nCtrl+Alt+D로 활성화"
+        self._nid.dwInfoFlags = NIIF_NONE
+        shell32.Shell_NotifyIconW(NIM_MODIFY, ctypes.byref(self._nid))
+        self._nid.uFlags &= ~NIF_INFO
 
-        self.row_offset = {}
-        total = len(self.banner_rows) + 2
-        for i, (rid, _, _) in enumerate(self.banner_rows):
-            if rid:
-                self.row_offset[rid] = total - 1 - i
+    def _update_tray(self, icon=None, target_title=None):
+        if icon:
+            self._nid.hIcon = icon
+        if target_title:
+            display = target_title[:20] + "…" if len(target_title) > 20 else target_title
+            self._nid.szTip = f"Letterbox Overlay\n{display}\n비활성화(Ctrl+Alt+D)"
+        else:
+            self._nid.szTip = "Letterbox Overlay\n활성화(Ctrl+Alt+D)"
+        shell32.Shell_NotifyIconW(NIM_MODIFY, ctypes.byref(self._nid))
 
-        title = f" Letterbox Overlay v{VERSION} "
-        top = f"╭───{C_CYAN}{C_BOLD}{title}{C_RESET}{'─' * (self.TW - vlen(title) - 3)}╮"
+    def _remove_tray_icon(self):
+        shell32.Shell_NotifyIconW(NIM_DELETE, ctypes.byref(self._nid))
 
-        print(top)
-        for _, left_text, right_text in self.banner_rows:
-            print(row(left_text, right_text))
-        print(f"╰{'─' * self.TW}╯")
+    def _show_tray_menu(self):
+        menu = user32.CreatePopupMenu()
+        user32.AppendMenuW(menu, MF_STRING, IDM_EXIT, "종료")
 
-        kernel32.SetConsoleTitleW("⚪ 대기")
+        pt = wintypes.POINT()
+        user32.GetCursorPos(ctypes.byref(pt))
 
-    def _update_row(self, rid, left, right=None):
-        up = self.row_offset[rid]
-        if right is None:
-            for r_id, _, r_right in self.banner_rows:
-                if r_id == rid:
-                    right = r_right
-                    break
-        line = self._row_fn(left, right)
-        print(f"\033[{up}A\r{line}\033[{up}B\r", end="", flush=True)
-
-    def _get_window_title(self, hwnd):
-        buf = ctypes.create_unicode_buffer(256)
-        user32.GetWindowTextW(hwnd, buf, 256)
-        return buf.value
+        user32.SetForegroundWindow(self.overlay_hwnd)
+        user32.TrackPopupMenu(
+            menu, TPM_RIGHTALIGN | TPM_BOTTOMALIGN,
+            pt.x, pt.y, 0, self.overlay_hwnd, None,
+        )
+        user32.DestroyMenu(menu)
 
     # ── 폴링 ──
 
     def _poll(self):
-        # 핫키 체크: Ctrl+Alt+D (edge detection)
         ctrl = user32.GetAsyncKeyState(VK_CONTROL) & 0x8000
         alt = user32.GetAsyncKeyState(VK_MENU) & 0x8000
         d = user32.GetAsyncKeyState(VK_D) & 0x8000
@@ -238,7 +271,6 @@ class LetterboxOverlay:
             self._toggle()
         self._key_was_down = key_down
 
-        # 포커스 변경 감지 + Z-order 유지
         if self.active:
             if not user32.IsWindow(self.target_hwnd):
                 self._deactivate()
@@ -268,6 +300,11 @@ class LetterboxOverlay:
         ex_style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
         return bool(ex_style & WS_EX_TOPMOST)
 
+    def _get_window_title(self, hwnd):
+        buf = ctypes.create_unicode_buffer(256)
+        user32.GetWindowTextW(hwnd, buf, 256)
+        return buf.value
+
     def _activate(self):
         fg = user32.GetForegroundWindow()
         if not fg or fg == self.overlay_hwnd:
@@ -278,19 +315,14 @@ class LetterboxOverlay:
         self._show_overlay()
 
         title = self._get_window_title(fg)
-        self._update_row("status", f"   {C_GREEN}● ON{C_RESET}")
-        self._update_row("target", f"   {C_WHITE}  대상: {title} ({fg:#x}){C_RESET}")
-        kernel32.SetConsoleTitleW(f"🟢 {title} ({fg:#x})")
+        self._update_tray(icon=self._icon_on, target_title=title)
 
     def _deactivate(self):
         self.active = False
         self._hide_overlay()
         self.target_hwnd = None
         self.target_was_topmost = False
-
-        self._update_row("status", f"   {C_DIM}○ 대기 중{C_RESET}")
-        self._update_row("target", f"   {C_DIM}  대상: 없음{C_RESET}")
-        kernel32.SetConsoleTitleW("⚪ 대기")
+        self._update_tray(icon=self._icon_off)
 
     # ── 오버레이 ──
 
@@ -313,14 +345,12 @@ class LetterboxOverlay:
         if not self.target_hwnd:
             return
         self.overlay_visible = True
-        # 1. 오버레이 TOPMOST + 모니터 전체 크기
         x, y, w, h = self._get_monitor_rect(self.target_hwnd)
         user32.SetWindowPos(
             self.overlay_hwnd, HWND_TOPMOST,
             x, y, w, h,
             SWP_NOACTIVATE | SWP_SHOWWINDOW,
         )
-        # 2. 대상 창 TOPMOST (마지막 → 오버레이 위)
         user32.SetWindowPos(
             self.target_hwnd, HWND_TOPMOST,
             0, 0, 0, 0,
@@ -345,15 +375,14 @@ class LetterboxOverlay:
     # ── 실행 ──
 
     def _pump_messages(self):
-        """오버레이 창의 Windows 메시지 처리."""
         msg = wintypes.MSG()
-        while user32.PeekMessageW(ctypes.byref(msg), self.overlay_hwnd, 0, 0, 1):
+        while user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):
             user32.TranslateMessage(ctypes.byref(msg))
             user32.DispatchMessageW(ctypes.byref(msg))
 
     def run(self):
         try:
-            while True:
+            while not self._quit_requested:
                 self._pump_messages()
                 self._poll()
                 time.sleep(0.016)
@@ -362,6 +391,7 @@ class LetterboxOverlay:
         finally:
             if self.active:
                 self._deactivate()
+            self._remove_tray_icon()
             if self._black_brush:
                 gdi32.DeleteObject(self._black_brush)
 
