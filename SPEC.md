@@ -43,4 +43,4 @@
 
 ## 용어
 - Passthrough: LSFG(Lossless Scaling)에서 프레임 생성/스케일링 모두 끈 모드
-- 이 프로그램의 원래 목적: Passthrough 모드에서 컨텐츠를 중앙 정렬하고 나머지를 검정으로 채우는 것
+- 이 프로그램의 원래 목적: Passthrough 모드에서 나머지 영역을 검정으로 채우는 것
