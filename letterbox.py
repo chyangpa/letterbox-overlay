@@ -1,5 +1,7 @@
 """Letterbox Overlay — 활성 창 외 영역을 검정으로 채우는 프로그램."""
 
+__version__ = "1.1.0"
+
 import ctypes
 import ctypes.wintypes as wintypes
 import time
@@ -397,5 +399,10 @@ class LetterboxOverlay:
 
 
 if __name__ == "__main__":
+    mutex = kernel32.CreateMutexW(None, True, "LetterboxOverlay_SingleInstance")
+    if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        kernel32.CloseHandle(mutex)
+        raise SystemExit
     app = LetterboxOverlay()
     app.run()
+    kernel32.CloseHandle(mutex)
