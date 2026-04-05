@@ -1,6 +1,6 @@
 """Letterbox Overlay — 활성 창 외 영역을 검정으로 채우는 프로그램."""
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 import ctypes
 import ctypes.wintypes as wintypes
@@ -19,6 +19,7 @@ WS_EX_TOPMOST = 0x00000008
 WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_NOACTIVATE = 0x08000000
 
+VK_C = 0x43
 VK_D = 0x44
 VK_CONTROL = 0xA2
 VK_MENU = 0xA4  # Alt
@@ -154,6 +155,9 @@ class LetterboxOverlay:
         self._create_tray_icon()
 
         self._key_was_down = False
+        self._center_key_was_down = False
+        self._centered = False
+        self._original_pos = None
         self._last_fg = None
 
     # ── 오버레이 창 생성 (Win32 직접) ──
@@ -314,12 +318,51 @@ class LetterboxOverlay:
         self.target_hwnd = fg
         self.target_was_topmost = self._is_topmost(fg)
         self.active = True
+        self._center_window()
         self._show_overlay()
 
         title = self._get_window_title(fg)
         self._update_tray(icon=self._icon_on, target_title=title)
 
+    def _toggle_center(self):
+        if self._centered:
+            self._restore_window_pos()
+        else:
+            self._center_window()
+
+    def _center_window(self):
+        if not self.target_hwnd:
+            return
+        rect = wintypes.RECT()
+        user32.GetWindowRect(self.target_hwnd, ctypes.byref(rect))
+        self._original_pos = (rect.left, rect.top)
+        win_w = rect.right - rect.left
+        win_h = rect.bottom - rect.top
+        mx, my, mw, mh = self._get_monitor_rect(self.target_hwnd)
+        cx = mx + (mw - win_w) // 2
+        cy = my + (mh - win_h) // 2
+        user32.SetWindowPos(
+            self.target_hwnd, HWND_TOPMOST,
+            cx, cy, 0, 0,
+            SWP_NOSIZE | SWP_NOACTIVATE,
+        )
+        self._centered = True
+
+    def _restore_window_pos(self):
+        if not self.target_hwnd or not self._original_pos:
+            return
+        ox, oy = self._original_pos
+        user32.SetWindowPos(
+            self.target_hwnd, HWND_TOPMOST,
+            ox, oy, 0, 0,
+            SWP_NOSIZE | SWP_NOACTIVATE,
+        )
+        self._centered = False
+        self._original_pos = None
+
     def _deactivate(self):
+        if self._centered:
+            self._restore_window_pos()
         self.active = False
         self._hide_overlay()
         self.target_hwnd = None
@@ -399,10 +442,23 @@ class LetterboxOverlay:
 
 
 if __name__ == "__main__":
-    mutex = kernel32.CreateMutexW(None, True, "LetterboxOverlay_SingleInstance")
-    if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
-        kernel32.CloseHandle(mutex)
-        raise SystemExit
-    app = LetterboxOverlay()
-    app.run()
-    kernel32.CloseHandle(mutex)
+    import subprocess
+    import sys
+
+    if "--worker" in sys.argv:
+        app = LetterboxOverlay()
+        app.run()
+    else:
+        mutex = kernel32.CreateMutexW(None, True, "LetterboxOverlay_SingleInstance")
+        if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+            kernel32.CloseHandle(mutex)
+            raise SystemExit
+        try:
+            while True:
+                child = subprocess.Popen([sys.executable, "--worker"])
+                child.wait()
+                if child.returncode == 0:
+                    break  # 정상 종료
+                time.sleep(1)  # 크래시 → 재시작
+        finally:
+            kernel32.CloseHandle(mutex)
