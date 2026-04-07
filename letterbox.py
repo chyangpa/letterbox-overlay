@@ -1,6 +1,6 @@
 """Letterbox Overlay — 활성 창 외 영역을 검정으로 채우는 프로그램."""
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 import ctypes
 import ctypes.wintypes as wintypes
@@ -291,8 +291,6 @@ class LetterboxOverlay:
                     if fg == self.target_hwnd and not self.overlay_visible:
                         self._last_fg = fg
                         self._show_overlay()
-                    elif self.overlay_visible:
-                        self._enforce_zorder()
 
     # ── 토글 ──
 
