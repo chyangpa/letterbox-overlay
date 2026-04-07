@@ -1,6 +1,6 @@
 """Letterbox Overlay — 활성 창 외 영역을 검정으로 채우는 프로그램."""
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 import ctypes
 import ctypes.wintypes as wintypes
@@ -169,7 +169,11 @@ class LetterboxOverlay:
         self._arrow_cursor = user32.LoadCursorW(None, wintypes.LPCWSTR(32512))
 
         WM_SETCURSOR = 0x0020
+        WM_NCHITTEST = 0x0084
+        HTTRANSPARENT = -1
         def _wndproc(hwnd, msg, wp, lp):
+            if msg == WM_NCHITTEST:
+                return HTTRANSPARENT
             if msg == WM_SETCURSOR:
                 user32.SetCursor(self._arrow_cursor)
                 return 1
