@@ -1,6 +1,6 @@
 """Letterbox Overlay — 활성 창 외 영역을 검정으로 채우는 프로그램."""
 
-__version__ = "1.4.1"
+__version__ = "1.5.0"
 
 import ctypes
 import ctypes.wintypes as wintypes
