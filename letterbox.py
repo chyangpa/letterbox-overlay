@@ -1,6 +1,6 @@
 """Letterbox Overlay — 활성 창 외 영역을 검정으로 채우는 프로그램."""
 
-__version__ = "1.4.0"
+__version__ = "1.4.1"
 
 import ctypes
 import ctypes.wintypes as wintypes
@@ -201,7 +201,7 @@ class LetterboxOverlay:
         user32.RegisterClassExW(ctypes.byref(wc))
 
         self.overlay_hwnd = user32.CreateWindowExW(
-            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
             "LetterboxOverlayClass",
             "LetterboxOverlay",
             WS_POPUP,
@@ -320,6 +320,7 @@ class LetterboxOverlay:
         self.target_hwnd = fg
         self.target_was_topmost = self._is_topmost(fg)
         self.active = True
+        self._last_fg = fg
         self._center_window()
         self._show_overlay()
 
@@ -414,7 +415,7 @@ class LetterboxOverlay:
                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
                 )
         user32.SetWindowPos(
-            self.overlay_hwnd, HWND_NOTOPMOST,
+            self.overlay_hwnd, None,
             0, 0, 0, 0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_HIDEWINDOW,
         )
