@@ -1,6 +1,6 @@
 """Letterbox Overlay — 활성 창 외 영역을 검정으로 채우는 프로그램."""
 
-__version__ = "1.4.1"
+__version__ = "1.5.0"
 
 import ctypes
 import ctypes.wintypes as wintypes
@@ -444,6 +444,29 @@ class LetterboxOverlay:
                 gdi32.DeleteObject(self._black_brush)
 
 
+def _is_admin():
+    try:
+        return bool(shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def _relaunch_as_admin():
+    """관리자 권한이 없으면 UAC 승격 후 재실행. 승격 성공 시 True 반환(현재 프로세스는 종료해야 함)."""
+    import sys
+    if getattr(sys, "frozen", False):
+        # PyInstaller 빌드: sys.executable이 곧 exe
+        exe = sys.executable
+        params = " ".join(f'"{a}"' for a in sys.argv[1:])
+    else:
+        # 스크립트 실행: python으로 스크립트 경로를 넘김
+        exe = sys.executable
+        params = " ".join(f'"{a}"' for a in sys.argv)
+    SW_SHOWNORMAL = 1
+    ret = shell32.ShellExecuteW(None, "runas", exe, params, None, SW_SHOWNORMAL)
+    return int(ret) > 32  # 32 이하는 실패(사용자 거부 등)
+
+
 if __name__ == "__main__":
     import subprocess
     import sys
@@ -452,6 +475,10 @@ if __name__ == "__main__":
         app = LetterboxOverlay()
         app.run()
     else:
+        # 관리자 권한 강제: 없으면 승격 재실행 후 현재 프로세스 종료
+        if not _is_admin():
+            _relaunch_as_admin()
+            raise SystemExit
         mutex = kernel32.CreateMutexW(None, True, "LetterboxOverlay_SingleInstance")
         if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
             kernel32.CloseHandle(mutex)

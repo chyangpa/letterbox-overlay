@@ -19,5 +19,12 @@
 ## 빌드
 
 ```
-python -m PyInstaller --onefile --noconsole --icon=activated.ico --add-data "activated.ico;." --add-data "deactivated.ico;." --name letterbox letterbox.py
+python -m PyInstaller --onefile --noconsole --uac-admin --icon=activated.ico --add-data "activated.ico;." --add-data "deactivated.ico;." --name letterbox letterbox.py
 ```
+
+`--uac-admin` 옵션은 exe에 "관리자 권한 요구" 매니페스트를 심어, 어떤 방식으로 실행하든 항상 관리자 권한으로 뜨게 합니다. 코드 자체에도 self-elevation이 있어 매니페스트 없이도 시작 시 권한이 없으면 UAC로 승격 재실행합니다.
+
+## 자동 실행 / 관리자 권한
+
+- **작업 스케줄러로 자동 실행 시**: 작업 속성 → 일반 탭에서 **"가장 높은 수준의 권한으로 실행"** 체크. 이래야 로그온 시 UAC 프롬프트 없이 관리자 권한으로 실행됩니다.
+- **시작 메뉴 검색에 등록**: `letterbox.exe` 바로가기를 `%APPDATA%\Microsoft\Windows\Start Menu\Programs` 폴더에 넣으면 검색에 노출됩니다.
